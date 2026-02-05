@@ -10,6 +10,15 @@ export type CookieSource = "safari" | "chrome" | "firefox" | "env" | "config";
 export interface AuthOptions {
 	cookies?: CookieSet;
 	cookieSource?: CookieSource;
+	account?: string;
+}
+
+// ── Account Types ──
+
+export interface AccountConfig {
+	li_at?: string;
+	jsessionid?: string;
+	cookieSource?: CookieSource;
 }
 
 // ── LinkedIn Entity Types ──
@@ -100,13 +109,7 @@ export interface ReactionCount {
 	count: number;
 }
 
-export type ReactionType =
-	| "LIKE"
-	| "CELEBRATE"
-	| "SUPPORT"
-	| "LOVE"
-	| "INSIGHTFUL"
-	| "FUNNY";
+export type ReactionType = "LIKE" | "CELEBRATE" | "SUPPORT" | "LOVE" | "INSIGHTFUL" | "FUNNY";
 
 export interface PostOptions {
 	visibility?: "PUBLIC" | "CONNECTIONS";
@@ -302,6 +305,8 @@ export interface LinkedConfig {
 	timeoutMs?: number;
 	defaultCount?: number;
 	delayMs?: number;
+	accounts?: Record<string, AccountConfig>;
+	defaultAccount?: string;
 }
 
 // ── API Response wrappers ──

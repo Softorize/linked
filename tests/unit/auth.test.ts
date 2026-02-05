@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { resolveCredentials } from "../../src/lib/auth.js";
+import { setCurrentAccount } from "../../src/lib/account-context.js";
+import * as configModule from "../../src/lib/config.js";
 
 describe("resolveCredentials", () => {
 	const originalEnv = process.env;
@@ -10,6 +12,8 @@ describe("resolveCredentials", () => {
 
 	afterEach(() => {
 		process.env = originalEnv;
+		setCurrentAccount(undefined);
+		vi.restoreAllMocks();
 	});
 
 	it("should return explicitly provided cookies", () => {
@@ -102,5 +106,107 @@ describe("resolveCredentials", () => {
 			expect(err).toBeDefined();
 			expect((err as Error).message).toBeTruthy();
 		}
+	});
+
+	it("should use named account credentials from getCurrentAccount()", () => {
+		delete process.env["LINKEDIN_LI_AT"];
+		delete process.env["LINKEDIN_JSESSIONID"];
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			accounts: {
+				work: { li_at: "work-token", jsessionid: "work-session" },
+			},
+			defaultAccount: "work",
+		});
+
+		setCurrentAccount("work");
+		const result = resolveCredentials();
+		expect(result).toEqual({
+			li_at: "work-token",
+			jsessionid: "work-session",
+		});
+	});
+
+	it("should use defaultAccount credentials when no account flag set", () => {
+		delete process.env["LINKEDIN_LI_AT"];
+		delete process.env["LINKEDIN_JSESSIONID"];
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			accounts: {
+				personal: { li_at: "p-token", jsessionid: "p-session" },
+			},
+			defaultAccount: "personal",
+		});
+
+		const result = resolveCredentials();
+		expect(result).toEqual({
+			li_at: "p-token",
+			jsessionid: "p-session",
+		});
+	});
+
+	it("should throw with available accounts when account not found", () => {
+		delete process.env["LINKEDIN_LI_AT"];
+		delete process.env["LINKEDIN_JSESSIONID"];
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			accounts: {
+				personal: { li_at: "a", jsessionid: "b" },
+				work: { li_at: "c", jsessionid: "d" },
+			},
+		});
+
+		setCurrentAccount("nonexistent");
+		expect(() => resolveCredentials()).toThrow(/nonexistent/);
+		expect(() => resolveCredentials()).toThrow(/personal/);
+	});
+
+	it("should prefer options.account over getCurrentAccount()", () => {
+		delete process.env["LINKEDIN_LI_AT"];
+		delete process.env["LINKEDIN_JSESSIONID"];
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			accounts: {
+				a: { li_at: "a-tok", jsessionid: "a-sess" },
+				b: { li_at: "b-tok", jsessionid: "b-sess" },
+			},
+			defaultAccount: "a",
+		});
+
+		setCurrentAccount("a");
+		const result = resolveCredentials({ account: "b" });
+		expect(result).toEqual({ li_at: "b-tok", jsessionid: "b-sess" });
+	});
+
+	it("should still use legacy flat credentials when no accounts map", () => {
+		delete process.env["LINKEDIN_LI_AT"];
+		delete process.env["LINKEDIN_JSESSIONID"];
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			li_at: "legacy-tok",
+			jsessionid: "legacy-sess",
+		});
+
+		const result = resolveCredentials();
+		expect(result).toEqual({
+			li_at: "legacy-tok",
+			jsessionid: "legacy-sess",
+		});
+	});
+
+	it("should still prefer env vars over named accounts", () => {
+		process.env["LINKEDIN_LI_AT"] = "env-token";
+		process.env["LINKEDIN_JSESSIONID"] = "env-session";
+
+		vi.spyOn(configModule, "loadConfig").mockReturnValue({
+			accounts: {
+				work: { li_at: "work-token", jsessionid: "work-session" },
+			},
+			defaultAccount: "work",
+		});
+
+		setCurrentAccount("work");
+		const result = resolveCredentials();
+		expect(result.li_at).toBe("env-token");
 	});
 });

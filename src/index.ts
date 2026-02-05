@@ -2,7 +2,17 @@
 
 export { LinkedInClient } from "./lib/client.js";
 export { resolveCredentials } from "./lib/auth.js";
-export { loadConfig, saveConfig } from "./lib/config.js";
+export { getCurrentAccount, setCurrentAccount } from "./lib/account-context.js";
+export {
+	loadConfig,
+	saveConfig,
+	getAccountCredentials,
+	listAccounts,
+	setAccount,
+	removeAccount,
+	setDefaultAccount,
+	migrateLegacyCredentials,
+} from "./lib/config.js";
 export { extractCookiesFromBrowser } from "./lib/cookie-extract.js";
 export { endpoints } from "./lib/voyager-endpoints.js";
 export { buildHeaders } from "./lib/headers.js";
@@ -18,6 +28,7 @@ export { buildPaginationParams, hasNextPage, nextPageStart } from "./lib/paginat
 
 // Re-export all types
 export type {
+	AccountConfig,
 	AuthOptions,
 	CookieSet,
 	CookieSource,
