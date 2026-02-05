@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: macos-arm64
+          - os: macos-13
+            target: macos-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run build
+
+      - run: pnpm test
+
+      - name: Package tarball
+        run: |
+          mkdir -p release
+          cp -r dist release/dist
+          cp package.json release/
+          cp README.md release/
+          cp LICENSE release/
+          cd release && pnpm install --prod --ignore-scripts 2>/dev/null || npm install --omit=dev --ignore-scripts
+          cd ..
+          tar -czf linked-${{ matrix.target }}.tar.gz -C release .
+
+      - name: Create install script
+        if: matrix.target == 'linux-x64'
+        run: |
+          cat > install.sh << 'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          REPO="softorize/linked"
+          INSTALL_DIR="${LINKED_INSTALL_DIR:-/usr/local/lib/linked}"
+          BIN_DIR="${LINKED_BIN_DIR:-/usr/local/bin}"
+
+          OS="$(uname -s)"
+          ARCH="$(uname -m)"
+
+          case "${OS}-${ARCH}" in
+            Linux-x86_64)  TARGET="linux-x64" ;;
+            Darwin-arm64)  TARGET="macos-arm64" ;;
+            Darwin-x86_64) TARGET="macos-x64" ;;
+            *) echo "Unsupported platform: ${OS}-${ARCH}" && exit 1 ;;
+          esac
+
+          VERSION="${1:-latest}"
+          if [ "$VERSION" = "latest" ]; then
+            DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/linked-${TARGET}.tar.gz"
+          else
+            DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/linked-${TARGET}.tar.gz"
+          fi
+
+          echo "Installing linked (${TARGET})..."
+          TMP="$(mktemp -d)"
+          curl -fsSL "$DOWNLOAD_URL" -o "${TMP}/linked.tar.gz"
+          sudo mkdir -p "$INSTALL_DIR"
+          sudo tar -xzf "${TMP}/linked.tar.gz" -C "$INSTALL_DIR"
+          sudo ln -sf "${INSTALL_DIR}/dist/cli.js" "${BIN_DIR}/linked"
+          sudo chmod +x "${BIN_DIR}/linked"
+          rm -rf "$TMP"
+          echo "linked installed to ${BIN_DIR}/linked"
+          linked --version
+          SCRIPT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linked-${{ matrix.target }}
+          path: linked-${{ matrix.target }}.tar.gz
+
+      - name: Upload install script
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-script
+          path: install.sh
+
+  publish-release:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/linked-linux-x64/linked-linux-x64.tar.gz
+            artifacts/linked-macos-arm64/linked-macos-arm64.tar.gz
+            artifacts/linked-macos-x64/linked-macos-x64.tar.gz
+            artifacts/install-script/install.sh
