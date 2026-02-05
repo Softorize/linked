@@ -56,6 +56,9 @@ export function registerAccountCommand(program: Command): void {
 		.argument("<name>", "Account name (letters, numbers, hyphens, underscores)")
 		.option("--li-at <token>", "LinkedIn li_at cookie value")
 		.option("--jsessionid <token>", "LinkedIn JSESSIONID cookie value")
+		.option("--li-mc <token>", "LinkedIn li_mc cookie value")
+		.option("--bcookie <token>", "LinkedIn bcookie value")
+		.option("--bscookie <token>", "LinkedIn bscookie value")
 		.option(
 			"--cookie-source <browser>",
 			"Browser to extract cookies from (safari, chrome, firefox)",
@@ -68,6 +71,9 @@ export function registerAccountCommand(program: Command): void {
 				opts: {
 					liAt?: string;
 					jsessionid?: string;
+					liMc?: string;
+					bcookie?: string;
+					bscookie?: string;
 					cookieSource?: string;
 					default?: boolean;
 				},
@@ -76,6 +82,9 @@ export function registerAccountCommand(program: Command): void {
 				const acctConfig: AccountConfig = {};
 				if (opts.liAt) acctConfig.li_at = opts.liAt;
 				if (opts.jsessionid) acctConfig.jsessionid = opts.jsessionid;
+				if (opts.liMc) acctConfig.li_mc = opts.liMc;
+				if (opts.bcookie) acctConfig.bcookie = opts.bcookie;
+				if (opts.bscookie) acctConfig.bscookie = opts.bscookie;
 				if (opts.cookieSource)
 					acctConfig.cookieSource = opts.cookieSource as AccountConfig["cookieSource"];
 

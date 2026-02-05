@@ -3,6 +3,9 @@
 export interface CookieSet {
 	li_at: string;
 	jsessionid: string;
+	li_mc?: string;
+	bcookie?: string;
+	bscookie?: string;
 }
 
 export type CookieSource = "safari" | "chrome" | "firefox" | "env" | "config";
@@ -18,6 +21,9 @@ export interface AuthOptions {
 export interface AccountConfig {
 	li_at?: string;
 	jsessionid?: string;
+	li_mc?: string;
+	bcookie?: string;
+	bscookie?: string;
 	cookieSource?: CookieSource;
 }
 

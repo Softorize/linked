@@ -1,7 +1,7 @@
 import type { CookieSet } from "./types.js";
 
 const DEFAULT_USER_AGENT =
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
 
 function buildXLiTrack(): string {
 	return JSON.stringify({
@@ -17,6 +17,14 @@ function buildXLiTrack(): string {
 	});
 }
 
+function buildCookieString(cookies: CookieSet): string {
+	const parts = [`li_at=${cookies.li_at}`, `JSESSIONID="${cookies.jsessionid.replace(/"/g, "")}"`];
+	if (cookies.li_mc) parts.push(`li_mc=${cookies.li_mc}`);
+	if (cookies.bcookie) parts.push(`bcookie=${cookies.bcookie}`);
+	if (cookies.bscookie) parts.push(`bscookie=${cookies.bscookie}`);
+	return parts.join("; ");
+}
+
 export function buildHeaders(cookies: CookieSet): Record<string, string> {
 	// JSESSIONID is stored with surrounding quotes; strip them for the CSRF token
 	const csrfToken = `ajax:${cookies.jsessionid.replace(/"/g, "")}`;
@@ -28,6 +36,6 @@ export function buildHeaders(cookies: CookieSet): Record<string, string> {
 		"x-li-track": buildXLiTrack(),
 		"x-restli-protocol-version": "2.0.0",
 		"csrf-token": csrfToken,
-		cookie: `li_at=${cookies.li_at}; JSESSIONID="${cookies.jsessionid.replace(/"/g, "")}"`,
+		cookie: buildCookieString(cookies),
 	};
 }

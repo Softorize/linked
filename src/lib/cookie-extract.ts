@@ -1,9 +1,9 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
-import type { CookieSet, CookieSource } from "./types.js";
+import { join } from "node:path";
 import { CookieExtractionError } from "./errors.js";
+import type { CookieSet, CookieSource } from "./types.js";
 
 /**
  * Extract LinkedIn cookies from a browser's cookie store.
@@ -16,10 +16,7 @@ interface CookieRow {
 }
 
 function extractFromSafari(): CookieSet | null {
-	const cookieDb = join(
-		homedir(),
-		"Library/Cookies/Cookies.binarycookies",
-	);
+	const cookieDb = join(homedir(), "Library/Cookies/Cookies.binarycookies");
 	if (!existsSync(cookieDb)) return null;
 
 	try {
@@ -38,7 +35,7 @@ for path in [safari_db]:
     try:
         conn = sqlite3.connect(path)
         cur = conn.cursor()
-        cur.execute("SELECT name, value FROM cookies WHERE domain LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID')")
+        cur.execute("SELECT name, value FROM cookies WHERE domain LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID' OR name='li_mc' OR name='bcookie' OR name='bscookie')")
         for name, value in cur.fetchall():
             cookies[name] = value
         conn.close()
@@ -54,10 +51,16 @@ if cookies.get("li_at") and cookies.get("JSESSIONID"):
 
 		if (result) {
 			const parsed = JSON.parse(result) as Record<string, string>;
-			const li_at = parsed["li_at"];
-			const jsessionid = parsed["JSESSIONID"];
+			const li_at = parsed.li_at;
+			const jsessionid = parsed.JSESSIONID;
 			if (li_at && jsessionid) {
-				return { li_at, jsessionid };
+				return {
+					li_at,
+					jsessionid,
+					li_mc: parsed.li_mc || undefined,
+					bcookie: parsed.bcookie || undefined,
+					bscookie: parsed.bscookie || undefined,
+				};
 			}
 		}
 	} catch {
@@ -67,10 +70,7 @@ if cookies.get("li_at") and cookies.get("JSESSIONID"):
 }
 
 function extractFromChrome(): CookieSet | null {
-	const cookieDb = join(
-		homedir(),
-		"Library/Application Support/Google/Chrome/Default/Cookies",
-	);
+	const cookieDb = join(homedir(), "Library/Application Support/Google/Chrome/Default/Cookies");
 	if (!existsSync(cookieDb)) return null;
 
 	try {
@@ -118,7 +118,7 @@ shutil.copy2(db_path, tmp)
 
 conn = sqlite3.connect(tmp)
 cur = conn.cursor()
-cur.execute("SELECT name, encrypted_value, value FROM cookies WHERE host_key LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID')")
+cur.execute("SELECT name, encrypted_value, value FROM cookies WHERE host_key LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID' OR name='li_mc' OR name='bcookie' OR name='bscookie')")
 cookies = {}
 for name, enc_val, val in cur.fetchall():
     if val:
@@ -142,10 +142,16 @@ if cookies.get("li_at") and cookies.get("JSESSIONID"):
 
 		if (result) {
 			const parsed = JSON.parse(result) as Record<string, string>;
-			const li_at = parsed["li_at"];
-			const jsessionid = parsed["JSESSIONID"];
+			const li_at = parsed.li_at;
+			const jsessionid = parsed.JSESSIONID;
 			if (li_at && jsessionid) {
-				return { li_at, jsessionid };
+				return {
+					li_at,
+					jsessionid,
+					li_mc: parsed.li_mc || undefined,
+					bcookie: parsed.bcookie || undefined,
+					bscookie: parsed.bscookie || undefined,
+				};
 			}
 		}
 	} catch {
@@ -155,10 +161,7 @@ if cookies.get("li_at") and cookies.get("JSESSIONID"):
 }
 
 function extractFromFirefox(): CookieSet | null {
-	const profilesDir = join(
-		homedir(),
-		"Library/Application Support/Firefox/Profiles",
-	);
+	const profilesDir = join(homedir(), "Library/Application Support/Firefox/Profiles");
 	if (!existsSync(profilesDir)) return null;
 
 	try {
@@ -177,7 +180,7 @@ for profile in glob.glob(os.path.join(profiles_dir, "*")):
         shutil.copy2(db_path, tmp)
         conn = sqlite3.connect(tmp)
         cur = conn.cursor()
-        cur.execute("SELECT name, value FROM moz_cookies WHERE baseDomain LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID')")
+        cur.execute("SELECT name, value FROM moz_cookies WHERE baseDomain LIKE '%linkedin.com%' AND (name='li_at' OR name='JSESSIONID' OR name='li_mc' OR name='bcookie' OR name='bscookie')")
         for name, value in cur.fetchall():
             cookies[name] = value
         conn.close()
@@ -198,10 +201,16 @@ if cookies.get("li_at") and cookies.get("JSESSIONID"):
 
 		if (result) {
 			const parsed = JSON.parse(result) as Record<string, string>;
-			const li_at = parsed["li_at"];
-			const jsessionid = parsed["JSESSIONID"];
+			const li_at = parsed.li_at;
+			const jsessionid = parsed.JSESSIONID;
 			if (li_at && jsessionid) {
-				return { li_at, jsessionid };
+				return {
+					li_at,
+					jsessionid,
+					li_mc: parsed.li_mc || undefined,
+					bcookie: parsed.bcookie || undefined,
+					bscookie: parsed.bscookie || undefined,
+				};
 			}
 		}
 	} catch {
@@ -218,9 +227,7 @@ const extractors: Record<string, () => CookieSet | null> = {
 
 const defaultOrder: CookieSource[] = ["safari", "chrome", "firefox"];
 
-export function extractCookiesFromBrowser(
-	source?: CookieSource,
-): CookieSet {
+export function extractCookiesFromBrowser(source?: CookieSource): CookieSet {
 	if (source && source !== "env" && source !== "config") {
 		const extractor = extractors[source];
 		if (!extractor) {

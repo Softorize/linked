@@ -1,6 +1,6 @@
-import { buildHeaders } from "./headers.js";
+import { withRetry } from "../utils/rate-limit.js";
 import { resolveCredentials } from "./auth.js";
-import { endpoints } from "./voyager-endpoints.js";
+import { loadConfig } from "./config.js";
 import {
 	AuthenticationError,
 	ChallengeError,
@@ -8,12 +8,12 @@ import {
 	NotFoundError,
 	RateLimitError,
 } from "./errors.js";
+import { buildHeaders } from "./headers.js";
 import { buildPaginationParams } from "./pagination.js";
-import { withRetry } from "../utils/rate-limit.js";
 import type {
 	AuthOptions,
-	Company,
 	CommentResult,
+	Company,
 	Connection,
 	ContactInfo,
 	Conversation,
@@ -37,6 +37,7 @@ import type {
 	VoyagerEntity,
 	VoyagerResponse,
 } from "./types.js";
+import { endpoints } from "./voyager-endpoints.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: Voyager API responses have dynamic structures
 type AnyRecord = Record<string, any>;
@@ -45,19 +46,24 @@ export class LinkedInClient {
 	private cookies: CookieSet;
 	private headers: Record<string, string>;
 	private timeoutMs: number;
+	private delayMs: number;
 
-	constructor(options?: AuthOptions & { timeoutMs?: number }) {
+	constructor(options?: AuthOptions & { timeoutMs?: number; delayMs?: number }) {
 		this.cookies = resolveCredentials(options);
 		this.headers = buildHeaders(this.cookies);
-		this.timeoutMs = options?.timeoutMs ?? 30000;
+		const config = loadConfig();
+		this.timeoutMs = options?.timeoutMs ?? config.timeoutMs ?? 30000;
+		this.delayMs = options?.delayMs ?? config.delayMs ?? 0;
 	}
 
 	// ── HTTP helpers ──
 
-	private async request<T = unknown>(
-		url: string,
-		init?: RequestInit,
-	): Promise<T> {
+	private async request<T = unknown>(url: string, init?: RequestInit): Promise<T> {
+		if (this.delayMs > 0) {
+			const jitter = Math.floor(Math.random() * this.delayMs);
+			await new Promise((resolve) => setTimeout(resolve, this.delayMs + jitter));
+		}
+
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -74,16 +80,11 @@ export class LinkedInClient {
 				if (text.includes("challenge") || text.includes("captcha")) {
 					throw new ChallengeError();
 				}
-				throw new AuthenticationError(
-					"Access forbidden. Your session may be restricted.",
-				);
+				throw new AuthenticationError("Access forbidden. Your session may be restricted.");
 			}
 			if (response.status === 404) throw new NotFoundError("Resource");
 			if (response.status === 429) {
-				const retryAfter = Number.parseInt(
-					response.headers.get("retry-after") ?? "60",
-					10,
-				);
+				const retryAfter = Number.parseInt(response.headers.get("retry-after") ?? "60", 10);
 				throw new RateLimitError(retryAfter);
 			}
 			if (!response.ok) {
@@ -104,18 +105,12 @@ export class LinkedInClient {
 		}
 	}
 
-	private async get<T = unknown>(
-		url: string,
-		params?: URLSearchParams,
-	): Promise<T> {
+	private async get<T = unknown>(url: string, params?: URLSearchParams): Promise<T> {
 		const fullUrl = params ? `${url}?${params.toString()}` : url;
 		return withRetry(() => this.request<T>(fullUrl));
 	}
 
-	private async post<T = unknown>(
-		url: string,
-		body?: unknown,
-	): Promise<T> {
+	private async post<T = unknown>(url: string, body?: unknown): Promise<T> {
 		return withRetry(() =>
 			this.request<T>(url, {
 				method: "POST",
@@ -125,10 +120,7 @@ export class LinkedInClient {
 		);
 	}
 
-	private async put<T = unknown>(
-		url: string,
-		body?: unknown,
-	): Promise<T> {
+	private async put<T = unknown>(url: string, body?: unknown): Promise<T> {
 		return withRetry(() =>
 			this.request<T>(url, {
 				method: "PUT",
@@ -139,15 +131,10 @@ export class LinkedInClient {
 	}
 
 	private async delete(url: string): Promise<void> {
-		await withRetry(() =>
-			this.request<void>(url, { method: "DELETE" }),
-		);
+		await withRetry(() => this.request<void>(url, { method: "DELETE" }));
 	}
 
-	private async patch<T = unknown>(
-		url: string,
-		body?: unknown,
-	): Promise<T> {
+	private async patch<T = unknown>(url: string, body?: unknown): Promise<T> {
 		return withRetry(() =>
 			this.request<T>(url, {
 				method: "PATCH",
@@ -159,14 +146,10 @@ export class LinkedInClient {
 
 	// ── Helper: extract included entities ──
 
-	private findIncluded(
-		response: VoyagerResponse,
-		type: string,
-	): VoyagerEntity[] {
+	private findIncluded(response: VoyagerResponse, type: string): VoyagerEntity[] {
 		return (response.included ?? []).filter(
 			(item) =>
-				(item["$type"] as string)?.includes(type) ||
-				(item["entityUrn"] as string)?.includes(type),
+				(item.$type as string)?.includes(type) || (item.entityUrn as string)?.includes(type),
 		) as VoyagerEntity[];
 	}
 
@@ -178,16 +161,12 @@ export class LinkedInClient {
 	}
 
 	async getProfile(identifier: string): Promise<Profile> {
-		const data = await this.get<VoyagerResponse>(
-			endpoints.profileView(identifier),
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.profileView(identifier));
 		return this.parseProfile(data);
 	}
 
 	async getProfileContactInfo(identifier: string): Promise<ContactInfo> {
-		const data = await this.get<VoyagerResponse>(
-			endpoints.profileContactInfo(identifier),
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.profileContactInfo(identifier));
 		return this.parseContactInfo(data);
 	}
 
@@ -195,10 +174,7 @@ export class LinkedInClient {
 
 	async getFeed(options?: PaginationOptions): Promise<FeedUpdate[]> {
 		const params = buildPaginationParams(options);
-		const data = await this.get<VoyagerResponse>(
-			endpoints.feedUpdates(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.feedUpdates(), params);
 		return this.parseFeedUpdates(data);
 	}
 
@@ -211,10 +187,7 @@ export class LinkedInClient {
 
 	// ── Create Content ──
 
-	async createPost(
-		text: string,
-		options?: PostOptions,
-	): Promise<PostResult> {
+	async createPost(text: string, options?: PostOptions): Promise<PostResult> {
 		const visibility = options?.visibility ?? "PUBLIC";
 		const body = {
 			visibleToConnectionsOnly: visibility === "CONNECTIONS",
@@ -228,10 +201,7 @@ export class LinkedInClient {
 			postState: "PUBLISHED",
 		};
 
-		const data = await this.post<{ value?: { urn?: string } }>(
-			endpoints.createPost(),
-			body,
-		);
+		const data = await this.post<{ value?: { urn?: string } }>(endpoints.createPost(), body);
 		const urn = data?.value?.urn ?? "unknown";
 
 		return {
@@ -258,10 +228,7 @@ export class LinkedInClient {
 		return { urn: data?.value?.urn ?? "unknown" };
 	}
 
-	async react(
-		postUrn: string,
-		type: ReactionType = "LIKE",
-	): Promise<void> {
+	async react(postUrn: string, type: ReactionType = "LIKE"): Promise<void> {
 		const body = {
 			reactionType: type,
 		};
@@ -282,10 +249,7 @@ export class LinkedInClient {
 		const params = buildPaginationParams(options);
 		params.set("q", "all");
 		params.set("keywords", query);
-		params.set(
-			"queryContext",
-			`List(spellCorrectionEnabled->true,relatedSearchesEnabled->true)`,
-		);
+		params.set("queryContext", "List(spellCorrectionEnabled->true,relatedSearchesEnabled->true)");
 
 		if (type) {
 			const filterMap: Record<SearchType, string> = {
@@ -298,61 +262,41 @@ export class LinkedInClient {
 			params.set("filters", `List(resultType->${filterMap[type]})`);
 		}
 
-		const data = await this.get<VoyagerResponse>(
-			endpoints.searchClusters(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.searchClusters(), params);
 
 		return this.parseSearchResults(data, type ?? "people");
 	}
 
 	// ── Connections ──
 
-	async getConnections(
-		options?: PaginationOptions,
-	): Promise<Connection[]> {
+	async getConnections(options?: PaginationOptions): Promise<Connection[]> {
 		const params = buildPaginationParams(options);
 		params.set("q", "search");
 		params.set("sortType", "RECENTLY_ADDED");
 
-		const data = await this.get<VoyagerResponse>(
-			endpoints.connections(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.connections(), params);
 
 		return this.parseConnections(data);
 	}
 
-	async sendConnectionRequest(
-		identifier: string,
-		message?: string,
-	): Promise<void> {
+	async sendConnectionRequest(identifier: string, message?: string): Promise<void> {
 		const body: AnyRecord = {
 			inviteeProfileUrn: `urn:li:fsd_profile:${identifier}`,
 			trackingId: this.generateTrackingId(),
 		};
 		if (message) {
-			body["message"] = message;
+			body.message = message;
 		}
 		await this.post(endpoints.memberRelationships(), body);
 	}
 
 	async withdrawConnectionRequest(identifier: string): Promise<void> {
-		await this.delete(
-			endpoints.memberRelationship(
-				`urn:li:fsd_profile:${identifier}`,
-			),
-		);
+		await this.delete(endpoints.memberRelationship(`urn:li:fsd_profile:${identifier}`));
 	}
 
-	async getInvitations(
-		sent = false,
-		options?: PaginationOptions,
-	): Promise<Invitation[]> {
+	async getInvitations(sent = false, options?: PaginationOptions): Promise<Invitation[]> {
 		const params = buildPaginationParams(options);
-		const endpoint = sent
-			? endpoints.sentInvitations()
-			: endpoints.receivedInvitations();
+		const endpoint = sent ? endpoints.sentInvitations() : endpoints.receivedInvitations();
 
 		const data = await this.get<VoyagerResponse>(endpoint, params);
 		return this.parseInvitations(data);
@@ -367,24 +311,16 @@ export class LinkedInClient {
 
 	// ── Messaging ──
 
-	async getConversations(
-		options?: PaginationOptions,
-	): Promise<Conversation[]> {
+	async getConversations(options?: PaginationOptions): Promise<Conversation[]> {
 		const params = buildPaginationParams(options);
 		params.set("q", "search");
 
-		const data = await this.get<VoyagerResponse>(
-			endpoints.conversations(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.conversations(), params);
 
 		return this.parseConversations(data);
 	}
 
-	async getMessages(
-		conversationId: string,
-		options?: PaginationOptions,
-	): Promise<Message[]> {
+	async getMessages(conversationId: string, options?: PaginationOptions): Promise<Message[]> {
 		const params = buildPaginationParams(options);
 
 		const data = await this.get<VoyagerResponse>(
@@ -395,29 +331,19 @@ export class LinkedInClient {
 		return this.parseMessages(data, conversationId);
 	}
 
-	async sendMessage(
-		recipientOrConversation: string,
-		text: string,
-	): Promise<void> {
+	async sendMessage(recipientOrConversation: string, text: string): Promise<void> {
 		// If it looks like a conversation ID, send to existing conversation
-		if (
-			recipientOrConversation.includes(",") ||
-			/^\d+$/.test(recipientOrConversation)
-		) {
-			await this.post(
-				endpoints.conversationEvents(recipientOrConversation),
-				{
-					eventCreate: {
-						value: {
-							"com.linkedin.voyager.messaging.create.MessageCreate":
-								{
-									attributedBody: { text, attributes: [] },
-									attachments: [],
-								},
+		if (recipientOrConversation.includes(",") || /^\d+$/.test(recipientOrConversation)) {
+			await this.post(endpoints.conversationEvents(recipientOrConversation), {
+				eventCreate: {
+					value: {
+						"com.linkedin.voyager.messaging.create.MessageCreate": {
+							attributedBody: { text, attributes: [] },
+							attachments: [],
 						},
 					},
 				},
-			);
+			});
 		} else {
 			// Start new conversation with a user
 			const body = {
@@ -425,11 +351,10 @@ export class LinkedInClient {
 					recipients: [`urn:li:fsd_profile:${recipientOrConversation}`],
 					eventCreate: {
 						value: {
-							"com.linkedin.voyager.messaging.create.MessageCreate":
-								{
-									attributedBody: { text, attributes: [] },
-									attachments: [],
-								},
+							"com.linkedin.voyager.messaging.create.MessageCreate": {
+								attributedBody: { text, attributes: [] },
+								attachments: [],
+							},
 						},
 					},
 					subtype: "MEMBER_TO_MEMBER",
@@ -441,48 +366,33 @@ export class LinkedInClient {
 
 	// ── Notifications ──
 
-	async getNotifications(
-		options?: PaginationOptions,
-	): Promise<Notification[]> {
+	async getNotifications(options?: PaginationOptions): Promise<Notification[]> {
 		const params = buildPaginationParams(options);
-		const data = await this.get<VoyagerResponse>(
-			endpoints.notifications(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.notifications(), params);
 		return this.parseNotifications(data);
 	}
 
 	// ── Companies ──
 
 	async getCompany(identifier: string): Promise<Company> {
-		const data = await this.get<VoyagerResponse>(
-			endpoints.companyBySlug(identifier),
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.companyBySlug(identifier));
 		return this.parseCompany(data);
 	}
 
 	// ── Jobs ──
 
-	async searchJobs(
-		query: string,
-		options?: PaginationOptions,
-	): Promise<Job[]> {
+	async searchJobs(query: string, options?: PaginationOptions): Promise<Job[]> {
 		const params = buildPaginationParams(options);
 		params.set("q", "search");
 		params.set("keywords", query);
 
-		const data = await this.get<VoyagerResponse>(
-			endpoints.jobCards(),
-			params,
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.jobCards(), params);
 
 		return this.parseJobs(data);
 	}
 
 	async getJob(id: string): Promise<Job> {
-		const data = await this.get<VoyagerResponse>(
-			endpoints.jobPosting(id),
-		);
+		const data = await this.get<VoyagerResponse>(endpoints.jobPosting(id));
 		return this.parseSingleJob(data);
 	}
 
@@ -495,9 +405,7 @@ export class LinkedInClient {
 
 	async getNetworkStats(): Promise<NetworkStats> {
 		const me = await this.getMe();
-		const stats = await this.get<VoyagerResponse>(
-			endpoints.profileStatistics(),
-		);
+		const stats = await this.get<VoyagerResponse>(endpoints.profileStatistics());
 		return {
 			connectionCount: me.connectionCount,
 			followerCount: me.followerCount,
@@ -514,29 +422,32 @@ export class LinkedInClient {
 		const included = data.included ?? [];
 
 		// Find the miniProfile or profile entity
-		const profileEntity = included.find(
-			(item) =>
-				item["$type"]?.toString().includes("Profile") ||
-				item["$type"]?.toString().includes("MiniProfile"),
-		) ?? d;
+		const profileEntity =
+			included.find(
+				(item) =>
+					item.$type?.toString().includes("Profile") ||
+					item.$type?.toString().includes("MiniProfile"),
+			) ?? d;
 
 		const p = (profileEntity ?? d) as AnyRecord;
 
 		return {
-			publicIdentifier: str(p["publicIdentifier"] ?? p["miniProfile"]?.["publicIdentifier"] ?? d["publicIdentifier"]),
-			firstName: str(p["firstName"] ?? d["firstName"]),
-			lastName: str(p["lastName"] ?? d["lastName"]),
-			headline: str(p["headline"] ?? d["headline"]),
-			summary: str(p["summary"] ?? d["summary"]),
-			industryName: str(p["industryName"] ?? d["industryName"]),
-			locationName: str(p["locationName"] ?? d["locationName"] ?? p["geoLocationName"]),
-			geoCountryName: str(p["geoCountryName"] ?? d["geoCountryName"]),
-			profilePictureUrl: this.extractImageUrl(p["profilePicture"] ?? p["picture"] ?? d["profilePicture"]),
-			backgroundPictureUrl: this.extractImageUrl(p["backgroundImage"] ?? d["backgroundImage"]),
-			connectionCount: num(p["connectionCount"] ?? d["connectionCount"]),
-			followerCount: num(p["followerCount"] ?? d["followerCount"]),
-			entityUrn: str(p["entityUrn"] ?? d["entityUrn"]),
-			profileUrl: `https://www.linkedin.com/in/${str(p["publicIdentifier"] ?? d["publicIdentifier"])}`,
+			publicIdentifier: str(
+				p.publicIdentifier ?? p.miniProfile?.publicIdentifier ?? d.publicIdentifier,
+			),
+			firstName: str(p.firstName ?? d.firstName),
+			lastName: str(p.lastName ?? d.lastName),
+			headline: str(p.headline ?? d.headline),
+			summary: str(p.summary ?? d.summary),
+			industryName: str(p.industryName ?? d.industryName),
+			locationName: str(p.locationName ?? d.locationName ?? p.geoLocationName),
+			geoCountryName: str(p.geoCountryName ?? d.geoCountryName),
+			profilePictureUrl: this.extractImageUrl(p.profilePicture ?? p.picture ?? d.profilePicture),
+			backgroundPictureUrl: this.extractImageUrl(p.backgroundImage ?? d.backgroundImage),
+			connectionCount: num(p.connectionCount ?? d.connectionCount),
+			followerCount: num(p.followerCount ?? d.followerCount),
+			entityUrn: str(p.entityUrn ?? d.entityUrn),
+			profileUrl: `https://www.linkedin.com/in/${str(p.publicIdentifier ?? d.publicIdentifier)}`,
 			experience: this.parseExperience(included),
 			education: this.parseEducation(included),
 		};
@@ -546,20 +457,21 @@ export class LinkedInClient {
 		return included
 			.filter(
 				(item) =>
-					item["$type"]?.toString().includes("Position") ||
-					item["$type"]?.toString().includes("position"),
+					item.$type?.toString().includes("Position") ||
+					item.$type?.toString().includes("position"),
 			)
 			.map((item) => ({
-				title: str(item["title"]),
-				companyName: str(item["companyName"] ?? item["company"]?.["name"]),
-				companyUrn: str(item["companyUrn"]),
-				locationName: str(item["locationName"]),
-				description: str(item["description"]),
-				startDate: this.parseDate(item["timePeriod"]?.["startDate"] ?? item["startDate"]),
-				endDate: item["timePeriod"]?.["endDate"] || item["endDate"]
-					? this.parseDate(item["timePeriod"]?.["endDate"] ?? item["endDate"])
-					: null,
-				current: !item["timePeriod"]?.["endDate"] && !item["endDate"],
+				title: str(item.title),
+				companyName: str(item.companyName ?? item.company?.name),
+				companyUrn: str(item.companyUrn),
+				locationName: str(item.locationName),
+				description: str(item.description),
+				startDate: this.parseDate(item.timePeriod?.startDate ?? item.startDate),
+				endDate:
+					item.timePeriod?.endDate || item.endDate
+						? this.parseDate(item.timePeriod?.endDate ?? item.endDate)
+						: null,
+				current: !item.timePeriod?.endDate && !item.endDate,
 			}));
 	}
 
@@ -567,17 +479,18 @@ export class LinkedInClient {
 		return included
 			.filter(
 				(item) =>
-					item["$type"]?.toString().includes("Education") ||
-					item["$type"]?.toString().includes("education"),
+					item.$type?.toString().includes("Education") ||
+					item.$type?.toString().includes("education"),
 			)
 			.map((item) => ({
-				schoolName: str(item["schoolName"] ?? item["school"]?.["name"]),
-				degreeName: str(item["degreeName"]),
-				fieldOfStudy: str(item["fieldOfStudy"]),
-				startDate: this.parseDate(item["timePeriod"]?.["startDate"] ?? item["startDate"]),
-				endDate: item["timePeriod"]?.["endDate"] || item["endDate"]
-					? this.parseDate(item["timePeriod"]?.["endDate"] ?? item["endDate"])
-					: null,
+				schoolName: str(item.schoolName ?? item.school?.name),
+				degreeName: str(item.degreeName),
+				fieldOfStudy: str(item.fieldOfStudy),
+				startDate: this.parseDate(item.timePeriod?.startDate ?? item.startDate),
+				endDate:
+					item.timePeriod?.endDate || item.endDate
+						? this.parseDate(item.timePeriod?.endDate ?? item.endDate)
+						: null,
 			}));
 	}
 
@@ -585,33 +498,33 @@ export class LinkedInClient {
 		if (!d || typeof d !== "object") return { year: 0 };
 		const obj = d as AnyRecord;
 		return {
-			year: num(obj["year"]),
-			month: obj["month"] != null ? num(obj["month"]) : undefined,
+			year: num(obj.year),
+			month: obj.month != null ? num(obj.month) : undefined,
 		};
 	}
 
 	private parseContactInfo(data: VoyagerResponse): ContactInfo {
 		const d = data.data as AnyRecord;
 		return {
-			emailAddress: d["emailAddress"] ? str(d["emailAddress"]) : null,
-			phoneNumbers: Array.isArray(d["phoneNumbers"])
-				? d["phoneNumbers"].map((p: AnyRecord) => ({
-						number: str(p["number"]),
-						type: str(p["type"]),
+			emailAddress: d.emailAddress ? str(d.emailAddress) : null,
+			phoneNumbers: Array.isArray(d.phoneNumbers)
+				? d.phoneNumbers.map((p: AnyRecord) => ({
+						number: str(p.number),
+						type: str(p.type),
 					}))
 				: [],
-			websites: Array.isArray(d["websites"])
-				? d["websites"].map((w: AnyRecord) => ({
-						url: str(w["url"]),
-						type: str(w["type"] ?? w["category"]),
-						label: str(w["label"] ?? w["type"] ?? w["category"]),
+			websites: Array.isArray(d.websites)
+				? d.websites.map((w: AnyRecord) => ({
+						url: str(w.url),
+						type: str(w.type ?? w.category),
+						label: str(w.label ?? w.type ?? w.category),
 					}))
 				: [],
-			twitterHandles: Array.isArray(d["twitterHandles"])
-				? d["twitterHandles"].map((h: AnyRecord) => str(h["name"]))
+			twitterHandles: Array.isArray(d.twitterHandles)
+				? d.twitterHandles.map((h: AnyRecord) => str(h.name))
 				: [],
-			address: d["address"] ? str(d["address"]) : null,
-			birthDay: d["birthDay"] ? this.parseDate(d["birthDay"]) : null,
+			address: d.address ? str(d.address) : null,
+			birthDay: d.birthDay ? this.parseDate(d.birthDay) : null,
 		};
 	}
 
@@ -621,31 +534,33 @@ export class LinkedInClient {
 
 		for (const item of included) {
 			if (
-				!item["$type"]?.toString().includes("Update") &&
-				!item["entityUrn"]?.toString().includes("update")
+				!item.$type?.toString().includes("Update") &&
+				!item.entityUrn?.toString().includes("update")
 			) {
 				continue;
 			}
 
-			const actorObj = item["actor"] as AnyRecord | undefined;
-			const socialDetail = item["socialDetail"] as AnyRecord | undefined;
-			const commentary = item["commentary"] as AnyRecord | undefined;
+			const actorObj = item.actor as AnyRecord | undefined;
+			const socialDetail = item.socialDetail as AnyRecord | undefined;
+			const commentary = item.commentary as AnyRecord | undefined;
 
-			const urn = str(item["entityUrn"] ?? item["urn"]);
+			const urn = str(item.entityUrn ?? item.urn);
 			if (!urn) continue;
 
 			updates.push({
 				urn,
-				authorUrn: str(actorObj?.["urn"] ?? actorObj?.["entityUrn"]),
-				authorName: str(actorObj?.["name"]?.["text"] ?? actorObj?.["name"]),
-				authorHeadline: str(actorObj?.["description"]?.["text"] ?? actorObj?.["description"]),
-				authorProfileUrl: str(actorObj?.["navigationUrl"]),
-				text: str(commentary?.["text"]?.["text"] ?? commentary?.["text"]),
-				commentary: str(commentary?.["text"]?.["text"] ?? commentary?.["text"]),
-				numLikes: num(socialDetail?.["totalSocialActivityCounts"]?.["numLikes"] ?? socialDetail?.["likes"]),
-				numComments: num(socialDetail?.["totalSocialActivityCounts"]?.["numComments"] ?? socialDetail?.["comments"]),
-				numShares: num(socialDetail?.["totalSocialActivityCounts"]?.["numShares"] ?? socialDetail?.["shares"]),
-				createdAt: num(item["createdTime"] ?? item["publishedAt"]),
+				authorUrn: str(actorObj?.urn ?? actorObj?.entityUrn),
+				authorName: str(actorObj?.name?.text ?? actorObj?.name),
+				authorHeadline: str(actorObj?.description?.text ?? actorObj?.description),
+				authorProfileUrl: str(actorObj?.navigationUrl),
+				text: str(commentary?.text?.text ?? commentary?.text),
+				commentary: str(commentary?.text?.text ?? commentary?.text),
+				numLikes: num(socialDetail?.totalSocialActivityCounts?.numLikes ?? socialDetail?.likes),
+				numComments: num(
+					socialDetail?.totalSocialActivityCounts?.numComments ?? socialDetail?.comments,
+				),
+				numShares: num(socialDetail?.totalSocialActivityCounts?.numShares ?? socialDetail?.shares),
+				createdAt: num(item.createdTime ?? item.publishedAt),
 				reactionTypeCounts: [],
 				postUrl: `https://www.linkedin.com/feed/update/${urn}`,
 			});
@@ -654,36 +569,25 @@ export class LinkedInClient {
 		return updates;
 	}
 
-	private parseSearchResults(
-		data: VoyagerResponse,
-		type: SearchType,
-	): SearchResult {
+	private parseSearchResults(data: VoyagerResponse, type: SearchType): SearchResult {
 		const included = data.included ?? [];
 		const items: SearchItem[] = [];
 
 		for (const item of included) {
-			const title = str(
-				item["title"]?.["text"] ?? item["title"] ?? item["name"],
-			);
+			const title = str(item.title?.text ?? item.title ?? item.name);
 			if (!title) continue;
 
 			items.push({
 				type,
 				title,
-				subtitle: str(
-					item["primarySubtitle"]?.["text"] ??
-						item["headline"] ??
-						item["subtitle"]?.["text"],
-				),
-				url: str(item["navigationUrl"] ?? item["url"]),
-				urn: str(item["entityUrn"] ?? item["targetUrn"]),
-				imageUrl: this.extractImageUrl(item["image"]),
-				snippets: Array.isArray(item["summary"]?.["textItems"])
-					? item["summary"]["textItems"].map((t: AnyRecord) =>
-							str(t["text"]),
-						)
-					: item["summary"]?.["text"]
-						? [str(item["summary"]["text"])]
+				subtitle: str(item.primarySubtitle?.text ?? item.headline ?? item.subtitle?.text),
+				url: str(item.navigationUrl ?? item.url),
+				urn: str(item.entityUrn ?? item.targetUrn),
+				imageUrl: this.extractImageUrl(item.image),
+				snippets: Array.isArray(item.summary?.textItems)
+					? item.summary.textItems.map((t: AnyRecord) => str(t.text))
+					: item.summary?.text
+						? [str(item.summary.text)]
 						: [],
 			});
 		}
@@ -703,20 +607,16 @@ export class LinkedInClient {
 	private parseConnections(data: VoyagerResponse): Connection[] {
 		const included = data.included ?? [];
 		return included
-			.filter(
-				(item) =>
-					item["$type"]?.toString().includes("MiniProfile") ||
-					item["publicIdentifier"],
-			)
+			.filter((item) => item.$type?.toString().includes("MiniProfile") || item.publicIdentifier)
 			.map((item) => ({
-				publicIdentifier: str(item["publicIdentifier"]),
-				firstName: str(item["firstName"]),
-				lastName: str(item["lastName"]),
-				headline: str(item["occupation"] ?? item["headline"]),
-				profilePictureUrl: this.extractImageUrl(item["picture"]),
-				entityUrn: str(item["entityUrn"]),
-				createdAt: num(item["createdAt"]),
-				profileUrl: `https://www.linkedin.com/in/${str(item["publicIdentifier"])}`,
+				publicIdentifier: str(item.publicIdentifier),
+				firstName: str(item.firstName),
+				lastName: str(item.lastName),
+				headline: str(item.occupation ?? item.headline),
+				profilePictureUrl: this.extractImageUrl(item.picture),
+				entityUrn: str(item.entityUrn),
+				createdAt: num(item.createdAt),
+				profileUrl: `https://www.linkedin.com/in/${str(item.publicIdentifier)}`,
 			}))
 			.filter((c) => c.publicIdentifier);
 	}
@@ -724,27 +624,28 @@ export class LinkedInClient {
 	private parseInvitations(data: VoyagerResponse): Invitation[] {
 		const included = data.included ?? [];
 		return included
-			.filter((item) =>
-				item["$type"]?.toString().includes("Invitation") ||
-				item["entityUrn"]?.toString().includes("invitation"),
+			.filter(
+				(item) =>
+					item.$type?.toString().includes("Invitation") ||
+					item.entityUrn?.toString().includes("invitation"),
 			)
 			.map((item) => {
-				const fromMember = item["fromMember"] as AnyRecord | undefined;
+				const fromMember = item.fromMember as AnyRecord | undefined;
 				return {
-					id: str(item["id"] ?? this.extractIdFromUrn(str(item["entityUrn"]))),
-					entityUrn: str(item["entityUrn"]),
+					id: str(item.id ?? this.extractIdFromUrn(str(item.entityUrn))),
+					entityUrn: str(item.entityUrn),
 					senderName: str(
 						fromMember
-							? `${fromMember["firstName"] ?? ""} ${fromMember["lastName"] ?? ""}`.trim()
-							: item["senderName"],
+							? `${fromMember.firstName ?? ""} ${fromMember.lastName ?? ""}`.trim()
+							: item.senderName,
 					),
-					senderHeadline: str(fromMember?.["occupation"] ?? item["senderHeadline"]),
-					senderProfileUrl: fromMember?.["publicIdentifier"]
-						? `https://www.linkedin.com/in/${fromMember["publicIdentifier"]}`
+					senderHeadline: str(fromMember?.occupation ?? item.senderHeadline),
+					senderProfileUrl: fromMember?.publicIdentifier
+						? `https://www.linkedin.com/in/${fromMember.publicIdentifier}`
 						: "",
-					message: str(item["message"]),
-					sentTime: num(item["sentTime"]),
-					invitationType: str(item["invitationType"]),
+					message: str(item.message),
+					sentTime: num(item.sentTime),
+					invitationType: str(item.invitationType),
 				};
 			})
 			.filter((i) => i.entityUrn);
@@ -756,38 +657,35 @@ export class LinkedInClient {
 
 		const convEntities = included.filter(
 			(item) =>
-				item["$type"]?.toString().includes("Conversation") ||
-				item["entityUrn"]?.toString().includes("conversation"),
+				item.$type?.toString().includes("Conversation") ||
+				item.entityUrn?.toString().includes("conversation"),
 		);
 
 		const miniProfiles = new Map<string, ConversationParticipant>();
 		for (const item of included) {
 			if (
-				item["$type"]?.toString().includes("MiniProfile") ||
-				(item["publicIdentifier"] && item["firstName"])
+				item.$type?.toString().includes("MiniProfile") ||
+				(item.publicIdentifier && item.firstName)
 			) {
-				miniProfiles.set(str(item["entityUrn"]), {
-					publicIdentifier: str(item["publicIdentifier"]),
-					firstName: str(item["firstName"]),
-					lastName: str(item["lastName"]),
-					headline: str(item["occupation"] ?? item["headline"]),
-					profilePictureUrl: this.extractImageUrl(item["picture"]),
+				miniProfiles.set(str(item.entityUrn), {
+					publicIdentifier: str(item.publicIdentifier),
+					firstName: str(item.firstName),
+					lastName: str(item.lastName),
+					headline: str(item.occupation ?? item.headline),
+					profilePictureUrl: this.extractImageUrl(item.picture),
 				});
 			}
 		}
 
 		for (const conv of convEntities) {
-			const conversationId = str(conv["entityUrn"]).split(":").pop() ?? "";
+			const conversationId = str(conv.entityUrn).split(":").pop() ?? "";
 			if (!conversationId) continue;
 
-			const participantUrns = Array.isArray(conv["participants"])
-				? conv["participants"].map((p: unknown) => {
+			const participantUrns = Array.isArray(conv.participants)
+				? conv.participants.map((p: unknown) => {
 						if (typeof p === "string") return p;
 						if (typeof p === "object" && p !== null) {
-							return str(
-								(p as AnyRecord)["entityUrn"] ??
-									(p as AnyRecord)["*miniProfile"],
-							);
+							return str((p as AnyRecord).entityUrn ?? (p as AnyRecord)["*miniProfile"]);
 						}
 						return "";
 					})
@@ -799,9 +697,9 @@ export class LinkedInClient {
 
 			conversations.push({
 				conversationId,
-				entityUrn: str(conv["entityUrn"]),
-				lastActivityAt: num(conv["lastActivityAt"]),
-				read: Boolean(conv["read"]),
+				entityUrn: str(conv.entityUrn),
+				lastActivityAt: num(conv.lastActivityAt),
+				read: Boolean(conv.read),
 				participants,
 				lastMessage: null,
 			});
@@ -810,34 +708,27 @@ export class LinkedInClient {
 		return conversations;
 	}
 
-	private parseMessages(
-		data: VoyagerResponse,
-		conversationId: string,
-	): Message[] {
+	private parseMessages(data: VoyagerResponse, conversationId: string): Message[] {
 		const included = data.included ?? [];
 		return included
 			.filter(
 				(item) =>
-					item["$type"]?.toString().includes("MessageEvent") ||
-					item["$type"]?.toString().includes("Event") ||
-					item["body"]?.["text"],
+					item.$type?.toString().includes("MessageEvent") ||
+					item.$type?.toString().includes("Event") ||
+					item.body?.text,
 			)
 			.map((item) => {
-				const from = item["from"] as AnyRecord | undefined;
-				const participant = from?.["miniProfile"] as AnyRecord | undefined;
+				const from = item.from as AnyRecord | undefined;
+				const participant = from?.miniProfile as AnyRecord | undefined;
 				return {
-					messageId: str(item["entityUrn"]).split(":").pop() ?? "",
-					entityUrn: str(item["entityUrn"]),
+					messageId: str(item.entityUrn).split(":").pop() ?? "",
+					entityUrn: str(item.entityUrn),
 					senderName: participant
-						? `${participant["firstName"] ?? ""} ${participant["lastName"] ?? ""}`.trim()
-						: str(item["senderName"]),
-					senderUrn: str(from?.["entityUrn"] ?? participant?.["entityUrn"]),
-					text: str(
-						item["body"]?.["text"] ??
-							item["eventContent"]?.["attributedBody"]?.["text"] ??
-							item["body"],
-					),
-					createdAt: num(item["createdAt"]),
+						? `${participant.firstName ?? ""} ${participant.lastName ?? ""}`.trim()
+						: str(item.senderName),
+					senderUrn: str(from?.entityUrn ?? participant?.entityUrn),
+					text: str(item.body?.text ?? item.eventContent?.attributedBody?.text ?? item.body),
+					createdAt: num(item.createdAt),
 					conversationId,
 				};
 			})
@@ -849,18 +740,18 @@ export class LinkedInClient {
 		return included
 			.filter(
 				(item) =>
-					item["$type"]?.toString().includes("Notification") ||
-					item["$type"]?.toString().includes("Card"),
+					item.$type?.toString().includes("Notification") ||
+					item.$type?.toString().includes("Card"),
 			)
 			.map((item) => ({
-				id: str(item["entityUrn"]).split(":").pop() ?? "",
-				entityUrn: str(item["entityUrn"]),
-				headline: str(item["headline"]?.["text"] ?? item["headline"]),
-				subHeadline: str(item["subHeadline"]?.["text"] ?? item["subHeadline"]),
-				additionalContent: str(item["additionalContent"]?.["text"] ?? item["additionalContent"]),
-				createdAt: num(item["publishedAt"] ?? item["createdAt"]),
-				read: Boolean(item["read"]),
-				actionUrl: str(item["navigationUrl"] ?? item["actionUrl"]),
+				id: str(item.entityUrn).split(":").pop() ?? "",
+				entityUrn: str(item.entityUrn),
+				headline: str(item.headline?.text ?? item.headline),
+				subHeadline: str(item.subHeadline?.text ?? item.subHeadline),
+				additionalContent: str(item.additionalContent?.text ?? item.additionalContent),
+				createdAt: num(item.publishedAt ?? item.createdAt),
+				read: Boolean(item.read),
+				actionUrl: str(item.navigationUrl ?? item.actionUrl),
 			}))
 			.filter((n) => n.headline);
 	}
@@ -872,54 +763,48 @@ export class LinkedInClient {
 		const entity =
 			included.find(
 				(item) =>
-					item["$type"]?.toString().includes("Company") ||
-					item["$type"]?.toString().includes("Organization"),
+					item.$type?.toString().includes("Company") ||
+					item.$type?.toString().includes("Organization"),
 			) ?? d;
 
 		const e = entity as AnyRecord;
-		const hq = e["headquarter"] as AnyRecord | undefined;
+		const hq = e.headquarter as AnyRecord | undefined;
 
 		return {
-			entityUrn: str(e["entityUrn"]),
-			universalName: str(e["universalName"]),
-			name: str(e["name"]),
-			tagline: str(e["tagline"]),
-			description: str(e["description"]),
-			website: str(e["companyPageUrl"] ?? e["website"]),
-			industryName: str(e["companyIndustries"]?.[0]?.["localizedName"] ?? e["industryName"]),
-			staffCount: num(e["staffCount"]),
-			staffCountRange: str(e["staffCountRange"]?.["start"]
-				? `${e["staffCountRange"]["start"]}-${e["staffCountRange"]["end"]}`
-				: e["staffCountRange"]),
+			entityUrn: str(e.entityUrn),
+			universalName: str(e.universalName),
+			name: str(e.name),
+			tagline: str(e.tagline),
+			description: str(e.description),
+			website: str(e.companyPageUrl ?? e.website),
+			industryName: str(e.companyIndustries?.[0]?.localizedName ?? e.industryName),
+			staffCount: num(e.staffCount),
+			staffCountRange: str(
+				e.staffCountRange?.start
+					? `${e.staffCountRange.start}-${e.staffCountRange.end}`
+					: e.staffCountRange,
+			),
 			headquarter: hq
 				? {
-						city: str(hq["city"]),
-						country: str(hq["country"]),
-						geographicArea: str(hq["geographicArea"]),
-						line1: str(hq["line1"]),
-						postalCode: str(hq["postalCode"]),
+						city: str(hq.city),
+						country: str(hq.country),
+						geographicArea: str(hq.geographicArea),
+						line1: str(hq.line1),
+						postalCode: str(hq.postalCode),
 					}
 				: null,
-			specialities: Array.isArray(e["specialities"])
-				? e["specialities"].map(String)
-				: [],
-			logoUrl: this.extractImageUrl(e["logo"]),
-			coverImageUrl: this.extractImageUrl(e["backgroundCoverImage"]),
-			foundedYear: e["foundedOn"]
-				? num((e["foundedOn"] as AnyRecord)["year"])
-				: null,
-			companyUrl: `https://www.linkedin.com/company/${str(e["universalName"])}`,
+			specialities: Array.isArray(e.specialities) ? e.specialities.map(String) : [],
+			logoUrl: this.extractImageUrl(e.logo),
+			coverImageUrl: this.extractImageUrl(e.backgroundCoverImage),
+			foundedYear: e.foundedOn ? num((e.foundedOn as AnyRecord).year) : null,
+			companyUrl: `https://www.linkedin.com/company/${str(e.universalName)}`,
 		};
 	}
 
 	private parseJobs(data: VoyagerResponse): Job[] {
 		const included = data.included ?? [];
 		return included
-			.filter(
-				(item) =>
-					item["$type"]?.toString().includes("Job") ||
-					item["title"],
-			)
+			.filter((item) => item.$type?.toString().includes("Job") || item.title)
 			.map((item) => this.mapJobEntity(item as AnyRecord))
 			.filter((j) => j.title);
 	}
@@ -931,29 +816,22 @@ export class LinkedInClient {
 
 	private mapJobEntity(item: AnyRecord): Job {
 		return {
-			id: str(item["entityUrn"]).split(":").pop() ?? str(item["id"]),
-			entityUrn: str(item["entityUrn"]),
-			title: str(item["title"]),
-			companyName: str(
-				item["companyDetails"]?.["company"]?.["name"] ??
-					item["companyName"],
-			),
-			companyUrl: str(item["companyDetails"]?.["company"]?.["url"]),
-			locationName: str(item["formattedLocation"] ?? item["locationName"]),
-			description: str(item["description"]?.["text"] ?? item["description"]),
-			listedAt: num(item["listedAt"]),
-			expireAt: num(item["expireAt"]),
-			workRemoteAllowed: Boolean(item["workRemoteAllowed"]),
-			applicantCount: num(item["applicantCount"]),
-			seniorityLevel: str(item["formattedExperienceLevel"]),
-			employmentType: str(item["formattedEmploymentStatus"] ?? item["employmentType"]),
-			jobFunctions: Array.isArray(item["jobFunctions"])
-				? item["jobFunctions"].map(String)
-				: [],
-			industries: Array.isArray(item["industries"])
-				? item["industries"].map(String)
-				: [],
-			jobUrl: `https://www.linkedin.com/jobs/view/${str(item["entityUrn"]).split(":").pop() ?? str(item["id"])}`,
+			id: str(item.entityUrn).split(":").pop() ?? str(item.id),
+			entityUrn: str(item.entityUrn),
+			title: str(item.title),
+			companyName: str(item.companyDetails?.company?.name ?? item.companyName),
+			companyUrl: str(item.companyDetails?.company?.url),
+			locationName: str(item.formattedLocation ?? item.locationName),
+			description: str(item.description?.text ?? item.description),
+			listedAt: num(item.listedAt),
+			expireAt: num(item.expireAt),
+			workRemoteAllowed: Boolean(item.workRemoteAllowed),
+			applicantCount: num(item.applicantCount),
+			seniorityLevel: str(item.formattedExperienceLevel),
+			employmentType: str(item.formattedEmploymentStatus ?? item.employmentType),
+			jobFunctions: Array.isArray(item.jobFunctions) ? item.jobFunctions.map(String) : [],
+			industries: Array.isArray(item.industries) ? item.industries.map(String) : [],
+			jobUrl: `https://www.linkedin.com/jobs/view/${str(item.entityUrn).split(":").pop() ?? str(item.id)}`,
 		};
 	}
 
@@ -962,17 +840,16 @@ export class LinkedInClient {
 		return included
 			.filter(
 				(item) =>
-					item["$type"]?.toString().includes("Viewer") ||
-					item["$type"]?.toString().includes("WvmpCard"),
+					item.$type?.toString().includes("Viewer") || item.$type?.toString().includes("WvmpCard"),
 			)
 			.map((item) => {
-				const viewer = item["viewer"] as AnyRecord | undefined;
+				const viewer = item.viewer as AnyRecord | undefined;
 				return {
-					viewerName: str(viewer?.["name"] ?? item["name"]),
-					viewerHeadline: str(viewer?.["headline"] ?? item["headline"]),
-					viewerProfileUrl: str(viewer?.["navigationUrl"] ?? item["navigationUrl"]),
-					viewedAt: num(item["viewedAt"] ?? item["createdAt"]),
-					isAnonymous: Boolean(item["isAnonymous"] ?? !viewer),
+					viewerName: str(viewer?.name ?? item.name),
+					viewerHeadline: str(viewer?.headline ?? item.headline),
+					viewerProfileUrl: str(viewer?.navigationUrl ?? item.navigationUrl),
+					viewedAt: num(item.viewedAt ?? item.createdAt),
+					isAnonymous: Boolean(item.isAnonymous ?? !viewer),
 				};
 			});
 	}
@@ -987,16 +864,16 @@ export class LinkedInClient {
 		const obj = imageData as AnyRecord;
 
 		// rootUrl + artifacts pattern
-		if (obj["rootUrl"] && Array.isArray(obj["artifacts"])) {
-			const largest = obj["artifacts"].at(-1) as AnyRecord | undefined;
-			if (largest?.["fileIdentifyingUrlPathSegment"]) {
-				return `${obj["rootUrl"]}${largest["fileIdentifyingUrlPathSegment"]}`;
+		if (obj.rootUrl && Array.isArray(obj.artifacts)) {
+			const largest = obj.artifacts.at(-1) as AnyRecord | undefined;
+			if (largest?.fileIdentifyingUrlPathSegment) {
+				return `${obj.rootUrl}${largest.fileIdentifyingUrlPathSegment}`;
 			}
 		}
 
 		// displayImageReference pattern
-		if (obj["displayImageReference"]?.["vectorImage"]) {
-			return this.extractImageUrl(obj["displayImageReference"]["vectorImage"]);
+		if (obj.displayImageReference?.vectorImage) {
+			return this.extractImageUrl(obj.displayImageReference.vectorImage);
 		}
 
 		// com.linkedin.common.VectorImage pattern
@@ -1008,10 +885,7 @@ export class LinkedInClient {
 		return "";
 	}
 
-	private extractNumber(
-		data: VoyagerResponse,
-		field: string,
-	): number {
+	private extractNumber(data: VoyagerResponse, field: string): number {
 		const d = data.data as AnyRecord;
 		return num(d[field]);
 	}
@@ -1036,7 +910,7 @@ function str(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (typeof value === "number") return String(value);
 	if (typeof value === "object" && "text" in (value as AnyRecord)) {
-		return str((value as AnyRecord)["text"]);
+		return str((value as AnyRecord).text);
 	}
 	return String(value);
 }

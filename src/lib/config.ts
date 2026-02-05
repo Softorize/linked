@@ -52,7 +52,13 @@ export function getAccountCredentials(config: LinkedConfig, name: string): Cooki
 	const account = config.accounts?.[name];
 	if (!account) return undefined;
 	if (account.li_at && account.jsessionid) {
-		return { li_at: account.li_at, jsessionid: account.jsessionid };
+		return {
+			li_at: account.li_at,
+			jsessionid: account.jsessionid,
+			li_mc: account.li_mc,
+			bcookie: account.bcookie,
+			bscookie: account.bscookie,
+		};
 	}
 	return undefined;
 }
