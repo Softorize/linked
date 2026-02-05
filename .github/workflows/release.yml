@@ -122,3 +122,37 @@ jobs:
             artifacts/linked-linux-x64/linked-linux-x64.tar.gz
             artifacts/linked-macos-arm64/linked-macos-arm64.tar.gz
             artifacts/install-script/install.sh
+
+  update-homebrew:
+    needs: publish-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          MACOS_SHA=$(sha256sum artifacts/linked-macos-arm64/linked-macos-arm64.tar.gz | awk '{print $1}')
+          LINUX_SHA=$(sha256sum artifacts/linked-linux-x64/linked-linux-x64.tar.gz | awk '{print $1}')
+          echo "macos=$MACOS_SHA" >> "$GITHUB_OUTPUT"
+          echo "linux=$LINUX_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: Softorize/homebrew-tap
+          event-type: update-formula
+          client-payload: |
+            {
+              "version": "${{ steps.version.outputs.version }}",
+              "macos_sha256": "${{ steps.sha.outputs.macos }}",
+              "linux_sha256": "${{ steps.sha.outputs.linux }}"
+            }
