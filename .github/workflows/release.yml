@@ -19,8 +19,6 @@ jobs:
             target: linux-x64
           - os: macos-latest
             target: macos-arm64
-          - os: macos-13
-            target: macos-x64
 
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +66,7 @@ jobs:
           case "${OS}-${ARCH}" in
             Linux-x86_64)  TARGET="linux-x64" ;;
             Darwin-arm64)  TARGET="macos-arm64" ;;
-            Darwin-x86_64) TARGET="macos-x64" ;;
+            Darwin-x86_64) TARGET="macos-arm64" ;;
             *) echo "Unsupported platform: ${OS}-${ARCH}" && exit 1 ;;
           esac
 
@@ -123,5 +121,4 @@ jobs:
           files: |
             artifacts/linked-linux-x64/linked-linux-x64.tar.gz
             artifacts/linked-macos-arm64/linked-macos-arm64.tar.gz
-            artifacts/linked-macos-x64/linked-macos-x64.tar.gz
             artifacts/install-script/install.sh
